@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QDropEvent
 
-# Try to import darkdetect for system theme detection
+# 尝试导入 darkdetect 用于系统主题检测
 try:
     import darkdetect
     HAS_DARKDETECT = True
@@ -38,11 +38,9 @@ class Logger(QObject):
         self.terminal = sys.stdout
 
     def write(self, message):
-        # self.terminal.write(message)
         self.log_signal.emit(message)
 
     def flush(self):
-        # self.terminal.flush()
         pass
 
 class WorkerThread(QObject):
@@ -150,7 +148,6 @@ class WorkerThread(QObject):
                 self.log_signal.emit(f"  -> 生成: {out_ws2_path}")
             except Exception as e:
                 self.log_signal.emit(f"  -> 失败: {str(e)}")
-                # self.log_signal.emit(traceback.format_exc())
                 
         self.log_signal.emit("构建任务完成！")
 
@@ -196,10 +193,7 @@ class WorkerThread(QObject):
         total = len(files)
         self.log_signal.emit(f"找到 {total} 个文件，开始提取 JSON...")
         
-        # 如果输出路径是一个文件（当输入是单文件时可能发生），我们需要处理
-        # 但通常 GUI 会给出一个目录作为输出，或者自动生成文件名
-        # 这里假设 output_path 是目录，如果不是目录则当作文件名前缀
-        
+        # 假设 output_path 是目录
         is_output_dir = not self.output_path.lower().endswith(".json")
         if is_output_dir:
             os.makedirs(self.output_path, exist_ok=True)
@@ -214,7 +208,6 @@ class WorkerThread(QObject):
                     out_json_path = self.output_path
                 else:
                     base_name = os.path.basename(file_path)
-                    # 如果文件名是 xxx.ws2，输出 xxx.json
                     if base_name.lower().endswith(".ws2"):
                         json_name = base_name[:-4] + ".json"
                     else:
@@ -235,26 +228,20 @@ class WorkerThread(QObject):
         if not ws2_json_handler:
             raise ImportError("找不到 ws2_json_handler 模块")
 
-        # 输入应当是 WS2 文件或目录
-        # 还需要 JSON 文件或目录
-        # 这里设计稍微有点 tricky，因为我们需要成对的 (WS2, JSON)
-        # 在 GUI 中，我们让用户选择 "原始 WS2 目录" 和 "JSON 目录"
-        # 或者 "原始 WS2 文件" 和 "JSON 文件"
-        
         ws2_input = self.input_path
         json_input = self.kwargs.get('json_input')
+        build_mode = self.kwargs.get('build_mode', 'auto') # 获取构建/加密模式
         
         if not json_input:
             self.log_signal.emit("错误: 未指定 JSON 输入路径")
             return
             
-        # 收集任务对
-        tasks = [] # (ws2_path, json_path, out_path)
+        # 收集任务对 (ws2_path, json_path, out_path)
+        tasks = [] 
         
         if os.path.isfile(ws2_input):
             if os.path.isfile(json_input):
                 # 单文件模式
-                # 输出路径如果是目录，则放入目录；如果是文件，则直接使用
                 if os.path.isdir(self.output_path) or self.output_path.endswith("/") or self.output_path.endswith("\\"):
                     out_name = os.path.basename(ws2_input)
                     out_path = os.path.join(self.output_path, out_name)
@@ -275,8 +262,7 @@ class WorkerThread(QObject):
             
             for ws2_file in ws2_files:
                 base_name = os.path.basename(ws2_file)
-                # 寻找对应的 JSON
-                # 假设命名规则: xxx.ws2 -> xxx.json
+                # 寻找对应的 JSON (xxx.ws2 -> xxx.json)
                 json_name = None
                 if base_name.lower().endswith(".ws2"):
                     json_name = base_name[:-4] + ".json"
@@ -301,7 +287,8 @@ class WorkerThread(QObject):
         for i, (ws, js, out) in enumerate(tasks):
             self.log_signal.emit(f"[{i+1}/{total}] 导入: {os.path.basename(ws)} + {os.path.basename(js)}")
             try:
-                ws2_json_handler.import_text_to_ws2(ws, js, out)
+                # 传递 output_encrypt_mode 以便根据 GUI 设置决定是否加密输出
+                ws2_json_handler.import_text_to_ws2(ws, js, out, output_encrypt_mode=build_mode)
                 self.log_signal.emit(f"  -> 生成: {out}")
             except Exception as e:
                 self.log_signal.emit(f"  -> 失败: {str(e)}")
@@ -346,13 +333,13 @@ class WS2ToolkitGUI(QWidget):
         
         self.init_ui()
         
-        # Redirect stdout
+        # 重定向 stdout
         self.logger = Logger()
         self.logger.log_signal.connect(self.append_log)
         sys.stdout = self.logger
         sys.stderr = self.logger
         
-        # Detect system theme on startup
+        # 启动时检测系统主题
         self.detect_system_theme()
 
     def init_ui(self):
@@ -361,7 +348,7 @@ class WS2ToolkitGUI(QWidget):
         main_layout.setSpacing(15)
         self.setLayout(main_layout)
         
-        # --- Header ---
+        # --- 标题栏 ---
         header_layout = QHBoxLayout()
         title_label = QLabel("AdvHD2.1 WS2 Toolkit")
         title_label.setObjectName("AppTitle") 
@@ -369,7 +356,7 @@ class WS2ToolkitGUI(QWidget):
         header_layout.addWidget(title_label)
         header_layout.addStretch()
         
-        # Theme Selector
+        # 主题选择器
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["跟随系统", "现代浅色", "现代深色", "赛博朋克"])
         self.theme_combo.currentTextChanged.connect(self.apply_theme)
@@ -378,26 +365,26 @@ class WS2ToolkitGUI(QWidget):
         
         main_layout.addLayout(header_layout)
         
-        # --- Tabs ---
+        # --- 标签页 ---
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
         
-        # --- Extract Tab (Merged) ---
+        # --- 提取标签页 ---
         extract_tab = QWidget()
         self.setup_extract_tab(extract_tab)
         self.tabs.addTab(extract_tab, "提取 (Extract)")
         
-        # --- Build Tab (Merged) ---
+        # --- 构建标签页 ---
         build_tab = QWidget()
         self.setup_build_tab(build_tab)
         self.tabs.addTab(build_tab, "构建 (Build)")
 
-        # --- Tools Tab ---
+        # --- 工具标签页 ---
         tools_tab = QWidget()
         self.setup_tools_tab(tools_tab)
         self.tabs.addTab(tools_tab, "WS2加解密 (WS2 Crypto)")
         
-        # --- Log ---
+        # --- 日志区域 ---
         log_label = QLabel("日志:")
         main_layout.addWidget(log_label)
         
@@ -406,9 +393,9 @@ class WS2ToolkitGUI(QWidget):
         self.log_text.setObjectName("LogConsole")
         main_layout.addWidget(self.log_text)
         
-        # Status
+        # 状态栏
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0) # Indeterminate
+        self.progress_bar.setRange(0, 0) # 不确定进度模式
         self.progress_bar.hide()
         main_layout.addWidget(self.progress_bar)
 
@@ -417,7 +404,7 @@ class WS2ToolkitGUI(QWidget):
         layout.setContentsMargins(15, 15, 15, 15)
         tab.setLayout(layout)
         
-        # Input
+        # 输入
         self.extract_input_edit = self.create_file_selector(
             layout, 
             "输入文件/目录 (.ws2):", 
@@ -425,7 +412,7 @@ class WS2ToolkitGUI(QWidget):
             on_change=lambda: self.auto_fill_output('extract')
         )
         
-        # Options
+        # 选项
         opts_layout = QHBoxLayout()
         opts_layout.addWidget(QLabel("解密模式:"))
         self.extract_mode_combo = QComboBox()
@@ -434,24 +421,24 @@ class WS2ToolkitGUI(QWidget):
         opts_layout.addStretch()
         layout.addLayout(opts_layout)
 
-        # Output
+        # 输出
         self.extract_output_edit = self.create_file_selector(layout, "输出目录:", is_input=False)
         
         layout.addSpacing(20)
         
-        # Action Buttons Area
+        # 按钮区域
         actions_group = QFrame()
         actions_group.setFrameShape(QFrame.Shape.StyledPanel)
         actions_layout = QHBoxLayout(actions_group)
         
-        # Disasm Button
+        # 反汇编按钮
         self.btn_disasm = ModernButton("反汇编 (To ASM)", is_primary=True)
         self.btn_disasm.clicked.connect(self.run_disasm)
         actions_layout.addWidget(self.btn_disasm)
         
         actions_layout.addSpacing(20)
         
-        # JSON Extract Button
+        # JSON 提取按钮
         self.btn_json_extract = ModernButton("提取文本 (To JSON)", is_primary=True)
         self.btn_json_extract.clicked.connect(self.run_json_extract)
         actions_layout.addWidget(self.btn_json_extract)
@@ -464,7 +451,7 @@ class WS2ToolkitGUI(QWidget):
         layout.setContentsMargins(15, 15, 15, 15)
         tab.setLayout(layout)
         
-        # 1. Mode Selector
+        # 1. 模式选择
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(QLabel("构建模式:"))
         self.build_type_combo = QComboBox()
@@ -476,11 +463,11 @@ class WS2ToolkitGUI(QWidget):
         mode_layout.addStretch()
         layout.addLayout(mode_layout)
 
-        # 2. Common Options (Encryption) - Moved up as requested
+        # 2. 通用选项 (加密设置)
         common_group = QFrame()
         common_group.setFrameShape(QFrame.Shape.NoFrame)
         common_layout = QHBoxLayout(common_group)
-        common_layout.setContentsMargins(0, 5, 0, 5) # Slightly adjust margins
+        common_layout.setContentsMargins(0, 5, 0, 5) 
         
         common_layout.addWidget(QLabel("输出加密设置 (通用):"))
         self.build_mode_combo = QComboBox()
@@ -490,16 +477,16 @@ class WS2ToolkitGUI(QWidget):
         
         layout.addWidget(common_group)
         
-        # 3. Description Label
+        # 3. 说明文本
         self.build_desc_label = QLabel("说明: ...")
         self.build_desc_label.setStyleSheet("color: #666; font-style: italic; margin-bottom: 10px;")
         self.build_desc_label.setWordWrap(True)
         layout.addWidget(self.build_desc_label)
         
-        # 4. Stacked Widget for Modes
+        # 4. 堆叠页面 (根据模式切换)
         self.build_stack = QStackedWidget()
         
-        # --- Page 1: ASM Build ---
+        # --- 页面 1: ASM 构建 ---
         page_asm = QWidget()
         asm_layout = QVBoxLayout(page_asm)
         asm_layout.setContentsMargins(0, 0, 0, 0)
@@ -527,7 +514,7 @@ class WS2ToolkitGUI(QWidget):
         asm_layout.addStretch()
         self.build_stack.addWidget(page_asm)
         
-        # --- Page 2: JSON Import ---
+        # --- 页面 2: JSON 导入 ---
         page_json = QWidget()
         json_layout = QVBoxLayout(page_json)
         json_layout.setContentsMargins(0, 0, 0, 0)
@@ -562,10 +549,10 @@ class WS2ToolkitGUI(QWidget):
         
         layout.addWidget(self.build_stack)
         
-        # Logic connection
+        # 连接信号
         self.build_type_combo.currentIndexChanged.connect(self.on_build_mode_changed)
         
-        # Initial state
+        # 初始化状态
         self.on_build_mode_changed(0)
 
     def on_build_mode_changed(self, index):
@@ -580,7 +567,7 @@ class WS2ToolkitGUI(QWidget):
         layout.setContentsMargins(15, 15, 15, 15)
         tab.setLayout(layout)
         
-        # Input
+        # 输入
         self.tool_input_edit = self.create_file_selector(
             layout, 
             "输入文件/目录 (.ws2):", 
@@ -588,7 +575,7 @@ class WS2ToolkitGUI(QWidget):
             on_change=lambda: self.auto_fill_output('tool')
         )
         
-        # Mode Selection
+        # 模式选择
         mode_group_layout = QHBoxLayout()
         mode_group_layout.addWidget(QLabel("操作模式:"))
         self.tool_radio_decrypt = QRadioButton("解密 (Decrypt)")
@@ -599,33 +586,29 @@ class WS2ToolkitGUI(QWidget):
         mode_group_layout.addStretch()
         layout.addLayout(mode_group_layout)
         
-        # Output
+        # 输出
         self.tool_output_edit = self.create_file_selector(layout, "输出目录:", is_input=False)
         
         layout.addSpacing(10)
         
-        # Button
+        # 按钮
         self.btn_tool = ModernButton("执行操作", is_primary=True)
         self.btn_tool.clicked.connect(self.run_tool)
         layout.addWidget(self.btn_tool)
         layout.addStretch()
 
     def setup_json_tab(self, tab):
-        # This function is deprecated as we merged its content into Extract/Build tabs.
-        # But we must remove it or keep it empty to avoid errors if referenced.
-        # It's better to remove it from the code, but if I just remove it, I must ensure it's not called.
-        # I already removed the call in init_ui, so I can just remove this method or leave it empty.
         pass
 
     def create_file_selector(self, parent_layout, label_text, is_input=True, on_change=None):
-        # Vertical container for Label + Controls
+        # 垂直容器: 标签 + 控件行
         container = QVBoxLayout()
         container.setSpacing(5)
         
         label = QLabel(label_text)
         container.addWidget(label)
         
-        # Horizontal row for Edit + Buttons
+        # 水平容器: 输入框 + 按钮
         row = QHBoxLayout()
         row.setSpacing(8)
         
@@ -644,7 +627,7 @@ class WS2ToolkitGUI(QWidget):
             btn_folder.clicked.connect(lambda: self.browse_folder(edit, on_change))
             row.addWidget(btn_folder)
         else:
-            # Output is typically a directory
+            # 输出通常是目录
             btn_folder = ModernButton("目录", is_primary=False)
             btn_folder.clicked.connect(lambda: self.browse_folder(edit))
             row.addWidget(btn_folder)
@@ -802,7 +785,7 @@ class WS2ToolkitGUI(QWidget):
             else:
                 real_theme = "现代浅色"
         
-        # Styles from majiro_gui.py
+        # 样式表
         light_qss = """
         QWidget { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 10pt; color: #333333; }
         QWidget#MainBackground { background-color: #f5f7fa; }
