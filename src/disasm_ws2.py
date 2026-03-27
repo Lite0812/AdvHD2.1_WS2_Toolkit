@@ -352,23 +352,41 @@ def detect_ws2_type(data):
             raise ValueError(f"Unknown type_code {type_code}")
 
     # 辅助函数：检查数据的合法性（通过Opcode判断）
-    def check_validity(test_data, limit=20):
+    def analyze_validity(test_data, limit=20):
         try:
             reader = BinaryReader(test_data)
             valid_opcodes = 0
+            known_opcodes = 0
+            unknown_opcodes = 0
             instructions_checked = 0
             special_opcodes = {0x01, 0x02, 0x06, 0x0F, 0xE6, 0xFF}
+            last_opcode = None
+
+            def invalid_result():
+                return {
+                    'score': -1,
+                    'valid_opcodes': valid_opcodes,
+                    'known_opcodes': known_opcodes,
+                    'unknown_opcodes': unknown_opcodes,
+                    'reached_end': False,
+                    'ends_with_ff': False
+                }
             
-            while instructions_checked < limit:
+            while limit is None or instructions_checked < limit:
                 if reader.offset >= len(test_data):
                     break
                 opcode = reader.read_byte()
+                last_opcode = opcode
                 opcode_str = str(opcode)
                 if opcode_str not in OPCODES and opcode not in special_opcodes:
-                    return -1 # 发现非法Opcode
+                    return invalid_result()
                 
-                # 有效的Opcode，增加计数
                 valid_opcodes += 1
+                opcode_name = OPCODE_NAMES.get(opcode, f"Unk{opcode:02X}")
+                if opcode_name.startswith("Unk"):
+                    unknown_opcodes += 1
+                else:
+                    known_opcodes += 1
                 instructions_checked += 1
                 
                 if opcode == 0x01:
@@ -398,7 +416,7 @@ def detect_ws2_type(data):
                         elif op_jump == 7:
                             skip_value(reader, test_data, 6)
                         else:
-                            return -1
+                            return invalid_result()
                     continue
 
                 if opcode == 0xE6:
@@ -424,24 +442,45 @@ def detect_ws2_type(data):
                         count = reader.read_byte()
                         next_type = signature[i + 1] if i + 1 < len(signature) else None
                         if next_type is None:
-                            return -1
+                            return invalid_result()
                         for _ in range(count):
                             skip_value(reader, test_data, next_type)
                         i += 2
                         continue
                     skip_value(reader, test_data, type_code)
                     i += 1
-            if reader.offset >= len(test_data) and valid_opcodes > 0:
-                return valid_opcodes + 10000
-            return valid_opcodes
+            reached_end = reader.offset >= len(test_data) and valid_opcodes > 0
+            ends_with_ff = reached_end and last_opcode == 0xFF
+            score = valid_opcodes + known_opcodes * 4 - unknown_opcodes * 6
+            if reached_end:
+                score += 10000
+            if ends_with_ff:
+                score += 20000
+            return {
+                'score': score,
+                'valid_opcodes': valid_opcodes,
+                'known_opcodes': known_opcodes,
+                'unknown_opcodes': unknown_opcodes,
+                'reached_end': reached_end,
+                'ends_with_ff': ends_with_ff
+            }
         except:
-            return 0
+            return {
+                'score': 0,
+                'valid_opcodes': 0,
+                'known_opcodes': 0,
+                'unknown_opcodes': 0,
+                'reached_end': False,
+                'ends_with_ff': False
+            }
+
+    def check_validity(test_data, limit=20):
+        return analyze_validity(test_data, limit)['score']
 
     # 初始检查（前20条指令）
     score_plain = check_validity(data, limit=20)
     
-    # 检查加密版本（采样前1000字节解密后检查）
-    decrypted_sample = decrypt_ws2(data[:2000]) # 增加采样大小以支持更多指令检查
+    decrypted_sample = decrypt_ws2(data[:2000])
     score_encrypted = check_validity(decrypted_sample, limit=20)
     
     # 如果得分相同且都大于0，尝试深入检查（增加检查指令数）
@@ -451,11 +490,27 @@ def detect_ws2_type(data):
         
     # 再次平局，尝试完整解密（如果文件不大）或更深入检查
     if score_plain == score_encrypted and score_plain > 0:
-        # 极端情况：继续增加深度
-         score_plain = check_validity(data, limit=500)
-         # 此时需要更多解密数据
-         decrypted_sample_large = decrypt_ws2(data[:10000])
-         score_encrypted = check_validity(decrypted_sample_large, limit=500)
+        score_plain = check_validity(data, limit=500)
+        decrypted_sample_large = decrypt_ws2(data[:10000])
+        score_encrypted = check_validity(decrypted_sample_large, limit=500)
+
+    plain_full = analyze_validity(data, limit=None)
+    encrypted_full = analyze_validity(decrypt_ws2(data), limit=None)
+
+    if plain_full['ends_with_ff'] != encrypted_full['ends_with_ff']:
+        return 'decrypted' if plain_full['ends_with_ff'] else 'encrypted'
+
+    if plain_full['reached_end'] != encrypted_full['reached_end']:
+        return 'decrypted' if plain_full['reached_end'] else 'encrypted'
+
+    if plain_full['unknown_opcodes'] != encrypted_full['unknown_opcodes']:
+        return 'decrypted' if plain_full['unknown_opcodes'] < encrypted_full['unknown_opcodes'] else 'encrypted'
+
+    if plain_full['known_opcodes'] != encrypted_full['known_opcodes']:
+        return 'decrypted' if plain_full['known_opcodes'] > encrypted_full['known_opcodes'] else 'encrypted'
+
+    if encrypted_full['score'] != plain_full['score']:
+        return 'encrypted' if encrypted_full['score'] > plain_full['score'] else 'decrypted'
 
     if score_encrypted > score_plain:
         return 'encrypted'

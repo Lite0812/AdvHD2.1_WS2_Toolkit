@@ -89,7 +89,7 @@ class WorkerThread(QObject):
 
         return classified_count >= 5 and majority_count >= minority_count * 5 and minority_count <= minority_limit
 
-    def emit_batch_summary(self, success_count, fail_count, ws2_summary=None):
+    def emit_batch_summary(self, success_count, fail_count, ws2_summary=None, warn_mismatch=True):
         self.log_signal.emit(f"汇总: 成功 {success_count}，失败 {fail_count}")
 
         if not ws2_summary:
@@ -107,7 +107,7 @@ class WorkerThread(QObject):
             detail += f"，检测失败 {detect_failed_count}"
         self.log_signal.emit(detail)
 
-        if self.should_warn_mismatch(ws2_summary):
+        if warn_mismatch and self.should_warn_mismatch(ws2_summary):
             self.log_signal.emit("提示: 当前批次中加密/解密数量差异很大，可能存在自动识别误判，请抽查结果。")
         
     def run(self):
@@ -145,7 +145,7 @@ class WorkerThread(QObject):
         total = len(ws2_files)
         success_count = 0
         fail_count = 0
-        ws2_summary = self.detect_ws2_summary(ws2_files) if total > 1 else None
+        ws2_summary = self.detect_ws2_summary(ws2_files) if total > 1 and enc_mode == 'auto' else None
         self.log_signal.emit(f"找到 {total} 个 .ws2 文件，开始反汇编 (模式: {display_mode})...")
         
         for i, file_path in enumerate(ws2_files):
@@ -161,7 +161,7 @@ class WorkerThread(QObject):
                 fail_count += 1
                 
         if total > 1:
-            self.emit_batch_summary(success_count, fail_count, ws2_summary)
+            self.emit_batch_summary(success_count, fail_count, ws2_summary, warn_mismatch=(enc_mode == 'auto'))
         self.log_signal.emit("反汇编任务完成！")
 
     def run_build(self):
