@@ -326,46 +326,113 @@ def detect_ws2_type(data):
     if not data:
         return 'unknown'
         
+    def skip_string(reader, test_data):
+        while reader.offset + 1 < len(test_data):
+            if test_data[reader.offset] == 0 and test_data[reader.offset + 1] == 0:
+                reader.offset += 2
+                return True
+            reader.offset += 2
+        return False
+
+    def skip_value(reader, test_data, type_code):
+        if type_code == 0:
+            reader.read_byte()
+        elif type_code in [1, 2]:
+            reader.read_word()
+        elif type_code in [3, 4, 5]:
+            reader.offset += 4
+            if reader.offset > len(test_data):
+                raise EOFError("文件结束")
+        elif type_code in [6, 9, 10]:
+            if not skip_string(reader, test_data):
+                raise EOFError("字符串未终止")
+        elif type_code == 8:
+            return
+        else:
+            raise ValueError(f"Unknown type_code {type_code}")
+
     # 辅助函数：检查数据的合法性（通过Opcode判断）
     def check_validity(test_data, limit=20):
         try:
             reader = BinaryReader(test_data)
             valid_opcodes = 0
             instructions_checked = 0
+            special_opcodes = {0x01, 0x02, 0x06, 0x0F, 0xE6, 0xFF}
             
             while instructions_checked < limit:
                 if reader.offset >= len(test_data):
                     break
                 opcode = reader.read_byte()
                 opcode_str = str(opcode)
-                if opcode_str not in OPCODES:
+                if opcode_str not in OPCODES and opcode not in special_opcodes:
                     return -1 # 发现非法Opcode
                 
                 # 有效的Opcode，增加计数
                 valid_opcodes += 1
                 instructions_checked += 1
                 
-                # 简单的跳过参数逻辑，仅根据签名表跳过字节
+                if opcode == 0x01:
+                    val = reader.read_byte()
+                    if val in [2, 128, 129, 130, 192] or (val == 3 and reader.peek_byte() in [50, 51, 127, 128]):
+                        skip_value(reader, test_data, 1)
+                        skip_value(reader, test_data, 5)
+                        skip_value(reader, test_data, 4)
+                        skip_value(reader, test_data, 4)
+                    continue
+
+                if opcode in [0x02, 0x06]:
+                    skip_value(reader, test_data, 4)
+                    continue
+
+                if opcode == 0x0F:
+                    count = reader.read_byte()
+                    for _ in range(count):
+                        skip_value(reader, test_data, 1)
+                        skip_value(reader, test_data, 6)
+                        reader.read_byte()
+                        reader.read_byte()
+                        reader.read_byte()
+                        op_jump = reader.read_byte()
+                        if op_jump == 6:
+                            skip_value(reader, test_data, 4)
+                        elif op_jump == 7:
+                            skip_value(reader, test_data, 6)
+                        else:
+                            return -1
+                    continue
+
+                if opcode == 0xE6:
+                    skip_value(reader, test_data, 4)
+                    skip_value(reader, test_data, 4)
+                    continue
+
+                if opcode == 0xFF:
+                    skip_value(reader, test_data, 4)
+                    reader.read_byte()
+                    reader.read_byte()
+                    reader.read_byte()
+                    reader.read_byte()
+                    continue
+
                 signature = OPCODES[opcode_str]
-                for type_code in signature:
-                    if type_code == -1: break
+                i = 0
+                while i < len(signature):
+                    type_code = signature[i]
+                    if type_code == -1:
+                        break
                     if type_code == 7:
-                         count = reader.read_byte()
-                         # 遇到变长数组，难以简单跳过，暂时停止深入检查
-                         return valid_opcodes 
-                    
-                    # 尝试跳过参数值
-                    if type_code in [0]: reader.offset += 1
-                    elif type_code in [1, 2]: reader.offset += 2
-                    elif type_code in [3, 4, 5]: reader.offset += 4
-                    elif type_code in [6, 9, 10]: 
-                        # 跳过字符串
-                        while reader.offset + 1 < len(test_data):
-                            if test_data[reader.offset] == 0 and test_data[reader.offset+1] == 0:
-                                reader.offset += 2
-                                break
-                            reader.offset += 2
-                    elif type_code == 8: pass
+                        count = reader.read_byte()
+                        next_type = signature[i + 1] if i + 1 < len(signature) else None
+                        if next_type is None:
+                            return -1
+                        for _ in range(count):
+                            skip_value(reader, test_data, next_type)
+                        i += 2
+                        continue
+                    skip_value(reader, test_data, type_code)
+                    i += 1
+            if reader.offset >= len(test_data) and valid_opcodes > 0:
+                return valid_opcodes + 10000
             return valid_opcodes
         except:
             return 0
@@ -749,7 +816,12 @@ def assemble_from_asm(asm_path):
                     raw_bytes = bytes.fromhex(parts[1].strip())
                     out_buffer.extend(raw_bytes)
                     current_offset += len(raw_bytes)
-                    temp_instructions.append(("RAW", raw_bytes, current_offset - len(raw_bytes)))
+                    temp_instructions.append({
+                        "opcode": "RAW",
+                        "args": raw_bytes,
+                        "offset": current_offset - len(raw_bytes),
+                        "size": len(raw_bytes)
+                    })
                 continue
                 
             if len(op_hex) != 2 or any(c not in "0123456789ABCDEFabcdef" for c in op_hex):

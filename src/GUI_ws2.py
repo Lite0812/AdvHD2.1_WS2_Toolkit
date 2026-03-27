@@ -53,6 +53,62 @@ class WorkerThread(QObject):
         self.input_path = input_path
         self.output_path = output_path
         self.kwargs = kwargs
+
+    def detect_ws2_summary(self, file_paths):
+        summary = {
+            'encrypted': 0,
+            'decrypted': 0,
+            'unknown': 0,
+            'detect_failed': 0
+        }
+
+        for file_path in file_paths:
+            try:
+                with open(file_path, 'rb') as f:
+                    mode = disasm_ws2.detect_ws2_type(f.read())
+                if mode in summary:
+                    summary[mode] += 1
+                else:
+                    summary['unknown'] += 1
+            except Exception:
+                summary['detect_failed'] += 1
+
+        return summary
+
+    def should_warn_mismatch(self, summary):
+        encrypted_count = summary.get('encrypted', 0)
+        decrypted_count = summary.get('decrypted', 0)
+        classified_count = encrypted_count + decrypted_count
+
+        if encrypted_count == 0 or decrypted_count == 0:
+            return False
+
+        minority_count = min(encrypted_count, decrypted_count)
+        majority_count = max(encrypted_count, decrypted_count)
+        minority_limit = max(3, classified_count // 10)
+
+        return classified_count >= 5 and majority_count >= minority_count * 5 and minority_count <= minority_limit
+
+    def emit_batch_summary(self, success_count, fail_count, ws2_summary=None):
+        self.log_signal.emit(f"汇总: 成功 {success_count}，失败 {fail_count}")
+
+        if not ws2_summary:
+            return
+
+        encrypted_count = ws2_summary.get('encrypted', 0)
+        decrypted_count = ws2_summary.get('decrypted', 0)
+        unknown_count = ws2_summary.get('unknown', 0)
+        detect_failed_count = ws2_summary.get('detect_failed', 0)
+
+        detail = f"文件状态: 加密 {encrypted_count}，解密 {decrypted_count}"
+        if unknown_count > 0:
+            detail += f"，未知 {unknown_count}"
+        if detect_failed_count > 0:
+            detail += f"，检测失败 {detect_failed_count}"
+        self.log_signal.emit(detail)
+
+        if self.should_warn_mismatch(ws2_summary):
+            self.log_signal.emit("提示: 当前批次中加密/解密数量差异很大，可能存在自动识别误判，请抽查结果。")
         
     def run(self):
         try:
@@ -87,6 +143,9 @@ class WorkerThread(QObject):
             return
             
         total = len(ws2_files)
+        success_count = 0
+        fail_count = 0
+        ws2_summary = self.detect_ws2_summary(ws2_files) if total > 1 else None
         self.log_signal.emit(f"找到 {total} 个 .ws2 文件，开始反汇编 (模式: {display_mode})...")
         
         for i, file_path in enumerate(ws2_files):
@@ -95,10 +154,14 @@ class WorkerThread(QObject):
                 lines = disasm_ws2.disassemble(file_path, encryption_mode=enc_mode)
                 out_path = disasm_ws2.write_disasm(self.output_path, file_path, lines)
                 self.log_signal.emit(f"  -> 输出: {out_path}")
+                success_count += 1
             except Exception as e:
                 self.log_signal.emit(f"  -> 失败: {str(e)}")
                 self.log_signal.emit(traceback.format_exc())
+                fail_count += 1
                 
+        if total > 1:
+            self.emit_batch_summary(success_count, fail_count, ws2_summary)
         self.log_signal.emit("反汇编任务完成！")
 
     def run_build(self):
@@ -119,6 +182,8 @@ class WorkerThread(QObject):
             return
             
         total = len(files)
+        success_count = 0
+        fail_count = 0
         self.log_signal.emit(f"找到 {total} 个 .asm.txt 文件，开始构建 (模式: {display_mode})...")
         
         os.makedirs(self.output_path, exist_ok=True)
@@ -146,9 +211,13 @@ class WorkerThread(QObject):
                     f.write(final_data)
                     
                 self.log_signal.emit(f"  -> 生成: {out_ws2_path}")
+                success_count += 1
             except Exception as e:
                 self.log_signal.emit(f"  -> 失败: {str(e)}")
+                fail_count += 1
                 
+        if total > 1:
+            self.log_signal.emit(f"汇总: 成功 {success_count}，失败 {fail_count}")
         self.log_signal.emit("构建任务完成！")
 
     def run_tool(self):
@@ -165,6 +234,9 @@ class WorkerThread(QObject):
             return
             
         total = len(files)
+        success_count = 0
+        fail_count = 0
+        ws2_summary = self.detect_ws2_summary(files) if total > 1 else None
         self.log_signal.emit(f"找到 {total} 个文件，开始{display_mode}...")
         
         for i, file_path in enumerate(files):
@@ -172,9 +244,13 @@ class WorkerThread(QObject):
             try:
                 out_path = disasm_ws2.process_file_encryption(file_path, self.output_path, tool_mode)
                 self.log_signal.emit(f"  -> 输出: {out_path}")
+                success_count += 1
             except Exception as e:
                 self.log_signal.emit(f"  -> 失败: {str(e)}")
+                fail_count += 1
         
+        if total > 1:
+            self.emit_batch_summary(success_count, fail_count, ws2_summary)
         self.log_signal.emit(f"{display_mode}任务完成！")
 
     def run_json_extract(self):
@@ -191,6 +267,9 @@ class WorkerThread(QObject):
             return
             
         total = len(files)
+        success_count = 0
+        fail_count = 0
+        ws2_summary = self.detect_ws2_summary(files) if total > 1 else None
         self.log_signal.emit(f"找到 {total} 个文件，开始提取 JSON...")
         
         # 假设 output_path 是目录
@@ -218,10 +297,14 @@ class WorkerThread(QObject):
                     json.dump(entries, f, ensure_ascii=False, indent=2)
                     
                 self.log_signal.emit(f"  -> 生成: {out_json_path}")
+                success_count += 1
             except Exception as e:
                 self.log_signal.emit(f"  -> 失败: {str(e)}")
                 self.log_signal.emit(traceback.format_exc())
+                fail_count += 1
                 
+        if total > 1:
+            self.emit_batch_summary(success_count, fail_count, ws2_summary)
         self.log_signal.emit("JSON 提取任务完成！")
 
     def run_json_import(self):
@@ -278,6 +361,9 @@ class WorkerThread(QObject):
                 tasks.append((ws2_file, json_path, out_path))
                 
         total = len(tasks)
+        success_count = 0
+        fail_count = 0
+        ws2_summary = self.detect_ws2_summary([ws for ws, _, _ in tasks]) if total > 1 else None
         if total == 0:
             self.log_signal.emit("未找到匹配的 WS2 和 JSON 文件对")
             return
@@ -290,10 +376,14 @@ class WorkerThread(QObject):
                 # 传递 output_encrypt_mode 以便根据 GUI 设置决定是否加密输出
                 ws2_json_handler.import_text_to_ws2(ws, js, out, output_encrypt_mode=build_mode)
                 self.log_signal.emit(f"  -> 生成: {out}")
+                success_count += 1
             except Exception as e:
                 self.log_signal.emit(f"  -> 失败: {str(e)}")
                 self.log_signal.emit(traceback.format_exc())
+                fail_count += 1
                 
+        if total > 1:
+            self.emit_batch_summary(success_count, fail_count, ws2_summary)
         self.log_signal.emit("JSON 导入任务完成！")
 
 class DragDropLineEdit(QLineEdit):

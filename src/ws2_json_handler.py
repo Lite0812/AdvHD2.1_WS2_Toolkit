@@ -5,6 +5,15 @@ import disasm_ws2
 
 # 匹配消息末尾的控制符 (%K, %P 等)，提取时需去除
 RE_CONTROL_CODES = re.compile(r'(%(?:K|P))+$')
+RE_NAME_PREFIX = re.compile(r'^(?P<prefix>(?:%(?:LC|LF|LR))+)?(?P<name>.*)$')
+
+def split_name_prefix(raw_name):
+    if not isinstance(raw_name, str):
+        return "", raw_name
+    match = RE_NAME_PREFIX.match(raw_name)
+    if not match:
+        return "", raw_name
+    return match.group("prefix") or "", match.group("name")
 
 def extract_text_from_ws2(file_path, encryption_mode='auto'):
     """从 .ws2 提取文本到 JSON"""
@@ -15,8 +24,8 @@ def extract_text_from_ws2(file_path, encryption_mode='auto'):
         raise RuntimeError(f"反汇编失败: {str(e)}")
 
     entries = []
-    current_name_raw = None # 保留原始名字 (含 %LC)
-    current_name_clean = None # 纯名字
+    current_name_raw = None
+    current_name_clean = None
 
     for line in lines:
         line = line.strip()
@@ -45,7 +54,7 @@ def extract_text_from_ws2(file_path, encryption_mode='auto'):
                         current_name_clean = None
                     else:
                         current_name_raw = raw_name
-                        current_name_clean = raw_name[3:] if raw_name.startswith("%LC") else raw_name
+                        _, current_name_clean = split_name_prefix(raw_name)
                 continue
                 
             # DisplayMessage (0x14)
@@ -71,8 +80,9 @@ def extract_text_from_ws2(file_path, encryption_mode='auto'):
                     
                     if current_name_clean:
                         entry["name"] = current_name_clean
-                        if current_name_raw and current_name_raw.startswith("%LC"):
-                            entry["name_prefix"] = "%LC"
+                        prefix, _ = split_name_prefix(current_name_raw)
+                        if prefix:
+                            entry["name_prefix"] = prefix
                     
                     # 输出条目
                     out_entry = {}
@@ -116,8 +126,8 @@ def import_text_to_ws2(ws2_path, json_path, output_path, encryption_mode='auto',
         else:
             # Auto detect
             with open(ws2_path, 'rb') as f:
-                header = f.read(16)
-                original_is_encrypted = disasm_ws2.detect_ws2_type(header) == 'encrypted'
+                raw_data = f.read()
+                original_is_encrypted = disasm_ws2.detect_ws2_type(raw_data) == 'encrypted'
 
         # 2. 反汇编模板
         # 读取时始终建议用 auto 或正确匹配的模式，否则反汇编会乱码
@@ -185,8 +195,7 @@ def import_text_to_ws2(ws2_path, json_path, output_path, encryption_mode='auto',
                     # 检查 Name 并回溯
                     if "name" in json_entry and last_set_name_line_idx != -1:
                         target_name = json_entry["name"]
-                        prefix = "%LC" if current_name_raw.startswith("%LC") else ""
-                        curr_clean = current_name_raw[3:] if prefix else current_name_raw
+                        prefix, curr_clean = split_name_prefix(current_name_raw)
                             
                         if target_name != curr_clean:
                             set_name_line = lines_to_process[last_set_name_line_idx]
